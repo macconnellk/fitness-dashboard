@@ -1,0 +1,85 @@
+name: Daily Dashboard Update
+
+on:
+  schedule:
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  update-dashboard:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install chromium
+      
+      - name: Create .env file
+        run: |
+          cat > .env << EOF
+          OURA_API_TOKEN=${{ secrets.OURA_API_TOKEN }}
+          OURA_EMAIL=${{ secrets.OURA_EMAIL }}
+          OURA_PASSWORD=${{ secrets.OURA_PASSWORD }}
+          STRAVA_CLIENT_ID=${{ secrets.STRAVA_CLIENT_ID }}
+          STRAVA_CLIENT_SECRET=${{ secrets.STRAVA_CLIENT_SECRET }}
+          STRAVA_REFRESH_TOKEN=${{ secrets.STRAVA_REFRESH_TOKEN }}
+          GOOGLE_SHEET_ID=${{ secrets.GOOGLE_SHEET_ID }}
+          WEEKLY_LIFT_TARGET=2
+          WEEKLY_LIFT_BONUS=3
+          WEEKLY_RUN_TARGET=3
+          WEEKLY_RUN_MINUTES_TARGET=60
+          HRV_BASELINE=60
+          RHR_BASELINE=55
+          TIMEZONE=America/New_York
+          CACHE_DIR=.cache
+          MAX_CACHE_AGE_DAYS=3
+          EOF
+      
+      - name: Generate dashboard
+        id: generate
+        run: |
+          echo "🎨 Generating dashboard..."
+          python generate_dashboard.py --force
+          if [ ! -f output/index.html ]; then
+            echo "❌ Dashboard generation failed"
+            exit 1
+          fi
+          echo "✅ Dashboard generated successfully"
+          echo "timestamp=$(date -u +"%Y-%m-%d %H:%M UTC")" >> $GITHUB_OUTPUT
+      
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./output
+          publish_branch: gh-pages
+          commit_message: 'Update dashboard - ${{ steps.generate.outputs.timestamp }}'
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
+      
+      - name: Success notification
+        if: success()
+        run: |
+          echo "✅ Dashboard updated successfully"
+      
+      - name: Failure notification
+        if: failure()
+        run: |
+          echo "❌ Dashboard update failed!"
+          exit 1
