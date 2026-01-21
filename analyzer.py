@@ -138,7 +138,7 @@ class TrainingAnalyzer:
                         act_date = datetime.fromisoformat(act['start_date'].replace('Z', '+00:00'))
                         cutoff_aware = cutoff.replace(tzinfo=timezone.utc)
                         if act_date > cutoff_aware:
-                        recent_activities.append(act)
+                            recent_activities.append(act)
             
             print(f"  This week: {strava_data['runs']}/{strava_data['run_target']} runs, "
                   f"{strava_data['lifts']}/{strava_data['lift_target']} lifts")
