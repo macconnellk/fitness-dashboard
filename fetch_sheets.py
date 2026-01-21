@@ -2,7 +2,7 @@ import os
 import pandas as pd
 from datetime import datetime
 
-def fetch_lean_mass_data():
+def fetch_lean_mass_data(use_cache=True):
     """Fetch lean mass data from published CSV - both actuals and goals"""
     csv_url = os.environ.get('GOOGLE_SHEET_CSV_URL')
     
