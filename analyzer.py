@@ -4,6 +4,7 @@ Combines all data sources and generates training recommendations.
 """
 from typing import Dict, Optional, List
 from datetime import datetime, timedelta
+from datetime import timezone
 import oura_manager
 import fetch_strava
 import fetch_sheets
@@ -134,7 +135,6 @@ class TrainingAnalyzer:
             if strava_data.get('activities'):
                 cutoff = datetime.now() - timedelta(days=3)
                 for act in strava_data['activities']:
-                    from datetime import timezone
                         act_date = datetime.fromisoformat(act['start_date'].replace('Z', '+00:00'))
                         cutoff_aware = cutoff.replace(tzinfo=timezone.utc)
                         if act_date > cutoff_aware:
