@@ -3,7 +3,7 @@ import requests
 from datetime import datetime
 
 def fetch_lean_mass_data(use_cache=True):
-    """Fetch lean mass data from Google Apps Script"""
+    """Fetch lean mass data from Google Apps Script and format for Analyzer"""
     script_url = os.environ.get('GOOGLE_SCRIPT_URL')
     
     if not script_url:
@@ -13,18 +13,26 @@ def fetch_lean_mass_data(use_cache=True):
     try:
         response = requests.get(script_url, timeout=10)
         response.raise_for_status()
-        data = response.json()
+        raw_data = response.json()
         
-        print(f"✅ Fetched lean mass data:")
-        if data.get('actual'):
-            print(f"   Actual: {data['actual'].get('weight_lbs')} lbs, {data['actual'].get('body_fat_pct')}% BF")
-        if data.get('goals'):
-            print(f"   Goal Week {data['goals'].get('week')}: {data['goals'].get('lifts_per_week')} lifts/week")
+        # BRIDGE: Map 'actual' from your Script to 'current' for your Analyzer
+        formatted_data = {
+            "current": {
+                "date": raw_data['actual'].get('date'),
+                "weight": raw_data['actual'].get('weight_lbs'),
+                "bf_pct": raw_data['actual'].get('body_fat_pct'),
+                "lean_mass": raw_data['actual'].get('fat_free_mass_lbs'),
+                "ffmi": raw_data['actual'].get('ffmi')
+            },
+            "goals": raw_data.get('goals', {}),
+            "long_term": raw_data.get('long_term_goals', {})
+        }
         
-        return data
+        print(f"✅ Fetched and formatted lean mass data for analyzer")
+        return formatted_data
         
     except Exception as e:
-        print(f"❌ Error fetching Google Sheet: {e}")
+        print(f"❌ Error fetching/formatting Google Sheet: {e}")
         return None
 
 if __name__ == '__main__':
