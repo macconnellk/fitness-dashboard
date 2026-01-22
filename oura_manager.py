@@ -1,15 +1,16 @@
 """
 Oura Manager - Smart Data Fetcher
-Handles fallback chain: API → Export → Cache
+Handles fallback chain: API (OAuth2) → Export (Scraper) → Cache
 Provides unified interface for getting Oura data regardless of source.
 """
+import os
+import requests
 from typing import Optional, Dict, Tuple
 from datetime import datetime
 import config
 from cache_manager import cache
 import oura_api
 import oura_export
-
 
 class OuraDataStatus:
     """Status of Oura data fetch."""
@@ -26,56 +27,63 @@ class OuraDataStatus:
         else:
             return f"❌ Oura data unavailable: {self.message}"
 
-
 def get_oura_data(force_refresh: bool = False) -> Tuple[Optional[Dict], OuraDataStatus]:
     """
     Get Oura data using best available method.
     
     Tries in order:
-    1. Oura API (if token configured and valid)
-    2. Automated/manual export download
-    3. Cached data (if recent enough)
-    4. Fail gracefully
-    
-    Args:
-        force_refresh: If True, skip cache and fetch fresh data
-    
-    Returns:
-        Tuple of (data_dict, status_object)
+    1. Oura API (using Refresh Token to get fresh Access Token)
+    2. Automated export download (Playwright Scraper)
+    3. Cached data (as last resort)
     """
     print("📊 Fetching Oura data...")
     
     # ===========================================================================
-    # 1. TRY OURA API (while subscription active)
+    # 1. TRY OURA API (OAuth2 Refresh Flow)
     # ===========================================================================
-    if config.OURA_API_TOKEN:
-        print("  → Attempting Oura API...")
+    if config.OURA_REFRESH_TOKEN:
+        print("  → Attempting Oura API (OAuth2 Refresh)...")
         try:
-            data = oura_api.fetch_oura_api_data(
-                use_cache=not force_refresh,
-                cache_max_age=1
-            )
+            # Step A: Exchange Refresh Token for a fresh Access Token
+            # Oura Access Tokens typically expire every 24 hours
+            token_url = "https://api.ouraring.com/oauth/token"
+            token_payload = {
+                "grant_type": "refresh_token",
+                "refresh_token": config.OURA_REFRESH_TOKEN,
+                "client_id": config.OURA_CLIENT_ID,
+                "client_secret": config.OURA_CLIENT_SECRET
+            }
             
-            if data:
-                status = OuraDataStatus(
-                    success=True,
-                    source='api',
-                    age_days=0,
-                    message="Fetched from Oura API"
+            token_response = requests.post(token_url, data=token_payload)
+            
+            if token_response.status_code == 200:
+                access_token = token_response.json().get("access_token")
+                print("  ✅ Token refreshed successfully.")
+                
+                # Step B: Fetch data using the new token
+                data = oura_api.fetch_oura_api_data(
+                    access_token=access_token,
+                    use_cache=not force_refresh
                 )
-                return data, status
+                
+                if data:
+                    return data, OuraDataStatus(True, 'api', 0, "Fetched via OAuth2 API")
+            
+            elif token_response.status_code == 403:
+                # 403 specifically indicates an expired Oura subscription
+                print("  ⚠️ API Access Forbidden (Subscription likely expired).")
             else:
-                print("  ⚠️  API fetch returned no data")
-        
+                print(f"  ⚠️ Token refresh failed: {token_response.status_code}")
+                
         except Exception as e:
-            print(f"  ⚠️  API fetch failed: {e}")
+            print(f"  ⚠️ API flow failed: {e}")
     else:
-        print("  ⚠️  No API token configured, skipping API")
-    
+        print("  ⚠️ No OURA_REFRESH_TOKEN configured, skipping API")
+
     # ===========================================================================
-    # 2. TRY OURA EXPORT (after API subscription ends)
+    # 2. TRY OURA EXPORT (Scraper Fallback)
     # ===========================================================================
-    print("  → Attempting Oura export...")
+    print("  → Attempting Oura export scraper...")
     try:
         data = oura_export.fetch_oura_export_data(
             use_cache=not force_refresh,
@@ -83,167 +91,37 @@ def get_oura_data(force_refresh: bool = False) -> Tuple[Optional[Dict], OuraData
         )
         
         if data:
-            # Check how old the export is
             age_days = 0
             if 'fetched_at' in data:
                 fetched_dt = datetime.fromisoformat(data['fetched_at'])
                 age_days = (datetime.now() - fetched_dt).days
             
-            status = OuraDataStatus(
-                success=True,
-                source='export',
-                age_days=age_days,
-                message="Fetched from Oura export"
-            )
-            return data, status
+            return data, OuraDataStatus(True, 'export', age_days, "Fetched via Playwright Scraper")
     
     except Exception as e:
-        print(f"  ⚠️  Export fetch failed: {e}")
-    
+        print(f"  ⚠️ Export fetch failed: {e}")
+
     # ===========================================================================
-    # 3. TRY CACHED DATA (last resort)
+    # 3. TRY CACHED DATA (Last Resort)
     # ===========================================================================
     if not force_refresh:
         print("  → Checking cache as last resort...")
-        
-        # Try API cache first
-        cached_api = cache.get('oura_api_data', max_age_days=config.MAX_CACHE_AGE_DAYS)
-        if cached_api:
-            data, age_days = cached_api
-            status = OuraDataStatus(
-                success=True,
-                source='cache (API)',
-                age_days=age_days,
-                message=f"Using {age_days} day old cached API data"
-            )
-            print(f"  ⚠️  {status.message}")
-            return data, status
-        
-        # Try export cache
-        cached_export = cache.get('oura_export_data', max_age_days=config.MAX_CACHE_AGE_DAYS)
-        if cached_export:
-            data, age_days = cached_export
-            status = OuraDataStatus(
-                success=True,
-                source='cache (export)',
-                age_days=age_days,
-                message=f"Using {age_days} day old cached export data"
-            )
-            print(f"  ⚠️  {status.message}")
-            return data, status
-    
+        for cache_key, label in [('oura_api_data', 'API'), ('oura_export_data', 'export')]:
+            cached = cache.get(cache_key, max_age_days=config.MAX_CACHE_AGE_DAYS)
+            if cached:
+                data, age_days = cached
+                return data, OuraDataStatus(True, f'cache ({label})', age_days, f"Using {age_days} day old cache")
+
     # ===========================================================================
     # 4. COMPLETE FAILURE
     # ===========================================================================
-    status = OuraDataStatus(
-        success=False,
-        source='failed',
-        age_days=-1,
-        message="No Oura data available. Check API token or download export manually."
-    )
+    status = OuraDataStatus(False, 'failed', -1, "All fetch methods failed.")
     print(f"  {status}")
-    
     return None, status
 
-
-def get_latest_sleep_data(data: Dict) -> Optional[Dict]:
-    """Extract latest sleep data from Oura data."""
-    if not data:
-        return None
-    
-    # Try daily_sleep first (has scores)
-    daily_sleep = data.get('daily_sleep', [])
-    if daily_sleep:
-        # Sort by date and get most recent
-        sorted_sleep = sorted(daily_sleep, key=lambda x: x.get('day', ''), reverse=True)
-        return sorted_sleep[0] if sorted_sleep else None
-    
-    # Fall back to sleep data
-    sleep = data.get('sleep', [])
-    if sleep:
-        sorted_sleep = sorted(sleep, key=lambda x: x.get('day', ''), reverse=True)
-        return sorted_sleep[0] if sorted_sleep else None
-    
-    return None
-
-
-def get_latest_readiness_data(data: Dict) -> Optional[Dict]:
-    """Extract latest readiness data from Oura data."""
-    if not data:
-        return None
-    
-    readiness = data.get('daily_readiness', [])
-    if readiness:
-        # Sort by date and get most recent
-        sorted_readiness = sorted(readiness, key=lambda x: x.get('day', ''), reverse=True)
-        return sorted_readiness[0] if sorted_readiness else None
-    
-    return None
-
-
-def get_recent_sleep_trend(data: Dict, days: int = 7) -> Optional[list]:
-    """Get sleep data for last N days."""
-    if not data:
-        return None
-    
-    daily_sleep = data.get('daily_sleep', []) or data.get('sleep', [])
-    if not daily_sleep:
-        return None
-    
-    # Sort by date (most recent first) and take N days
-    sorted_sleep = sorted(daily_sleep, key=lambda x: x.get('day', ''), reverse=True)
-    return sorted_sleep[:days]
-
-
-def get_recent_readiness_trend(data: Dict, days: int = 7) -> Optional[list]:
-    """Get readiness data for last N days."""
-    if not data:
-        return None
-    
-    readiness = data.get('daily_readiness', [])
-    if not readiness:
-        return None
-    
-    # Sort by date (most recent first) and take N days
-    sorted_readiness = sorted(readiness, key=lambda x: x.get('day', ''), reverse=True)
-    return sorted_readiness[:days]
-
+# ... (Keep all your existing helper functions: get_latest_sleep_data, etc.) ...
 
 if __name__ == '__main__':
-    # Test Oura Manager
-    print("Testing Oura Manager...")
-    print("=" * 60)
-    
-    # Fetch data
+    # Test the manager
     data, status = get_oura_data()
-    
-    print("\nStatus:", status)
-    
-    if data:
-        print("\n✓ Data available:")
-        print(f"  Source: {status.source}")
-        print(f"  Age: {status.age_days} days")
-        
-        # Test helper functions
-        latest_sleep = get_latest_sleep_data(data)
-        if latest_sleep:
-            print(f"\n  Latest sleep:")
-            print(f"    Date: {latest_sleep.get('day')}")
-            print(f"    Score: {latest_sleep.get('score', 'N/A')}")
-        
-        latest_readiness = get_latest_readiness_data(data)
-        if latest_readiness:
-            print(f"\n  Latest readiness:")
-            print(f"    Date: {latest_readiness.get('day')}")
-            print(f"    Score: {latest_readiness.get('score', 'N/A')}")
-        
-        recent_sleep = get_recent_sleep_trend(data, days=7)
-        if recent_sleep:
-            print(f"\n  Sleep trend (7 days): {len(recent_sleep)} records")
-    
-    else:
-        print("\n❌ No data available")
-        print("\nNext steps:")
-        print("1. Configure OURA_API_TOKEN in .env (for API access)")
-        print("2. Or download export manually from Oura website")
-        print("3. Or run automated export with OURA_EMAIL/OURA_PASSWORD")
+    print(f"\nFinal Status: {status}")
