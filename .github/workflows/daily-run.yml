@@ -39,7 +39,7 @@ jobs:
           STRAVA_CLIENT_ID=${{ secrets.STRAVA_CLIENT_ID }}
           STRAVA_CLIENT_SECRET=${{ secrets.STRAVA_CLIENT_SECRET }}
           STRAVA_REFRESH_TOKEN=${{ secrets.STRAVA_REFRESH_TOKEN }}
-          GOOGLE_SHEET_CSV_URL=${{ secrets.GOOGLE_SHEET_CSV_URL }}
+          GOOGLE_SCRIPT_URL=${{ secrets.GOOGLE_SCRIPT_URL }}
           WEEKLY_LIFT_TARGET=2
           WEEKLY_LIFT_BONUS=3
           WEEKLY_RUN_TARGET=3
